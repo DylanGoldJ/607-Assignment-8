@@ -1,0 +1,19 @@
+---
+title: "607 Assignment 11 Dylan Gold"
+format: html
+editor: visual
+---
+
+# Approach
+In this assignment we have to develop a personalized recommended system. This assignment builds of a previous assignment where we build a global estimate system. \
+I intend to use the data that was given to us for the previous assignment. \
+There are 4 ways suggested, Content-based filtering, Item-to-item collaborative filtering, User-to-user collaborative filtering, Matrix factorization. \
+I have taken some classes on linear algebra so I considered the Matrix Factorization method but actually computing UV looks very tedious. \
+I would probably also use a k value of 2 so It would be possible. I also see that there is a function to find the derivative of an expression. Aswell as a way to get an expression equal to 0 with the `stats` package. I will try this out and hopefully it works.
+```{r}
+f <- expression((x+1)^2)  # sample
+d = D(f, "x") # Derivative, we need to minimize the root mean square error for UV decomposition
+d2 <- function(x) eval(d) # Wrap in function, uniroot needs a function
+uniroot(f = d2, lower = -10, upper = 10) # Gets the root with a range (finds when equal 0 in our case)
+```
+In the case that this does not work I will probably use a user to user collaborative filtering with a normalized cosine to measure the difference between users. It is described in Mining Massive Datasets in section 9.3.2
