@@ -18,7 +18,7 @@ d = D(f, "x") # Derivative, we need to minimize the root mean square error for U
 d2 <- function(x) eval(d) # Wrap in function, uniroot needs a function
 uniroot(f = d2, lower = -10, upper = 10) # Gets the root with a range (finds when equal 0 in our case)
 ```
-In the case that this does not work I will probably use a user to user collaborative filtering with a normalized cosine to measure the difference between users. It is described in Mining Massive Datasets in section 9.3.2.
+In the case that this does not work I will probably use a user to user collaborative filtering with a normalized cosine to measure the difference between users. It is described in Mining Massive Datasets in section 9.3.2
 
 # Codebase
 Imports \
@@ -49,7 +49,6 @@ I will first just get the numeric values as a matrix. \
 ```{r}
 M <- as.matrix(df)
 M <- M[, -1] # drop first column (Critic names)
-M <- unname(M)
 
 # Convert to numeric values
 M <- matrix(
@@ -58,175 +57,198 @@ M <- matrix(
 )
 M
 ```
-We need to create two other matrices U, V, of dimensions n by d and d by m such that M ~= UV. \
-The value of d is arbitrary but they serve to characterize the users and movies.\
+I had tried the matrix factorization but I was not able to get it to work. 
 
-I will not normalize the matrix this time.
-First Initialize U and V to sqrt(a/d) where a is the average of the matrix.
-Then we need to perform optimization to get a low rsme.
-Then we need to repeat this optimization to lower it even more.
+Rather I will try a user to user collaborative filtering. This method was described in 9.3.2 in Mining of Massive Data sets.\
+In collaborative filtering we are using how similar users are to other users (or items are to items). \
+What we will do and one method suggested by the text book is first find similar users(predetermined N) using some sort of distance measure, and take the average of those users for that specific item for the original users prediction. It is also suggested that the matrix is normalized first. \
 
-
-## Initialize
+First I will normalize the matrix. We will just subtract everyone average rating from their own ratings.\
+We can see that each user has their reviews decreased by a fixed amount, their respective averages.
 ```{r}
-# I will use 2 for d. This keeps it simple
-d <- 2
-a <- sqrt(mean(M, na.rm = TRUE)/d) # A = square of the average value over d
-U <- matrix(a, nrow = nrow(M), ncol = d)
-V <- matrix(a, nrow = d, ncol = ncol(M))
+normalization_vector <- rowMeans(M, na.rm = TRUE) # Get vector of everyones average rating.
+M_norm <- M - normalization_vector
+M_norm
 ```
+I was confused about this strategy because users who give all 3s will be the same as someone who gives all 5s but with collaborative filtering we want to see patterns like how much someone likes something more than another. \
+We need to now find users that are similar to eachother.
+Because so many users though had all the same rating which normalized to 0 the cosine difference will not work very well. The cosine diff treats 0s as unseen which is not good for us.
 
-## Optimization
-Now that we have an initial value for U and V we need to optimize the rsme. \
-Initially my plan was to create an expression and then use the derivative function to manually find each value but I was not sure how to create the expressions. \
-The text book has an equation that also gives us a value for this. I used an LLM chatgpt to help me understand how these formulas can be used as well as generate some code. \
+Instead of using the cosine difference like planned I will switch to the Jaccard distance. \
+The Jaccard divides the intersection by the union of the values. \
+Because our matrix has values describe how much they like a movie relative to their average, values equal to and above 0 will represent a 1, and less than 0 is 0. We then can look at the unions and the intersections.
 
-I will create a function for generating a value in the U matrix. I also started with testing the example from the text book.
 ```{r}
-M_sample <- matrix(c(
-  5, 2, 4, 4, 3,
-  3, 1, 2, 4, 1,
-  2, NA, 3, 1, 4,
-  2, 5, 4, 3, 5,
-  4, 4, 5, 4, NA
-), nrow = 5, byrow = TRUE)
+M_Jac <- ifelse(M_norm >= 0, 1, 0)
 
-# Step 2: Initialize U and V (k = 2, all ones)
-k_sample <- 2
+Jac_diff <- function(x, y) {# Difference between two row/vectors,(users) x and y.
 
-U_sample <- matrix(1, nrow = nrow(M_sample), ncol = k)
-V_sample <- matrix(1, nrow = k, ncol = ncol(M_sample))
-```
-
-Here is code that I worked on with an LLM. It performs the equation mentioned in the book where we find the value of U(k,r) that would minimize the error from our predicted M and our actual M. \
-```{R}
-U_update <- function(M, U, V, k, r, s){
+  neither_na <- !is.na(x) & !is.na(y) # Get columns that have no na values.
   
-  valid_items <- which(!is.na(M[r, ])) # Only go through values where we are not missing something
+  x <- x[neither_na] # Update x and y, they still have corresponding columns
+  y <- y[neither_na] 
   
-  pred <- U[r, ] %*% V[, valid_items]
+  intersection = sum(x == y)
   
-  residuals <- M[r, valid_items] - pred + U[r, k] * V[k, valid_items]
+  union = length(x) # We only have values that are not na for both vectors now, counting how many gives us our union.
   
-  u <- sum(V[k, valid_items] * residuals) /
-       sum(V[k, valid_items]^2)
+  if(union == 0) {return(0)} # Avoid divide by 0
   
-  return(u)
+  return(intersection/union)
 }
+# Test examples, 2 and 3 should have .5
+Jac_diff(M_Jac[3,], M_Jac[2,])
 ```
+Now that we have a metric to find how similar two users are we can find who are the most similar users.\
+We can make a matrix that has every pair of users distance from each other.
 ```{r}
-U_update <- function(M, U, V, k, r){
-  
-  valid_items <- which(!is.na(M[r, ]))
-  
-  if (length(valid_items) == 0) return(0)
-  
-  pred <- U[r, , drop = FALSE] %*% V[, valid_items, drop = FALSE]
-  
-  residuals <- M[r, valid_items] - pred + U[r, k] * V[k, valid_items]
-  
-  u <- sum(V[k, valid_items] * residuals) /
-       sum(V[k, valid_items]^2)
-  
-  return(u)
-}
-```
-I also got a V update which is
-```{r}
-V_update <- function(M, U, V, k, r, s){
-  
-  valid_users <- which(!is.na(M[, s]))  # rows where column s is observed
-  
-  pred <- U[valid_users, ] %*% V[, s]   # full dot product
-  
-  residuals <- M[valid_users, s] - pred + U[valid_users, k] * V[k, s]
-  
-  v <- sum(U[valid_users, k] * residuals) /
-       sum(U[valid_users, k]^2)
-  
-  return(v)
+create_jac_matrix <- function(J){
+  # Create N by N matrix N being number of users(rows)
+  n <- nrow(J)
+  new_matrix <- matrix(0, n, n) 
+  # Iterate through and populate M
+  for(i in 1:n){ # Iterate over rows
+    for(j in 1:n){
+      # Diagonal keep as 0
+      if(i != j) (new_matrix[i,j] <- Jac_diff(J[i,], J[j,])) # Set equal to the jaccard distance for each person(should be 1 for itself?)
+    }
+  }
+  return(new_matrix)
 }
 
+jac_matrix<- create_jac_matrix(M_Jac)
+
 ```
 
-
-
-We can follow the example in the text book to see if we have something that works.
-```{r}
-# Update U(1,1) 
-U_sample[1,1] <- U_update(M_sample, U_sample, V_sample,1, 1)
-
-# Update V(1,1), should be 1.617
-V_sample[1,1] <- V_update(M_sample, U_sample, V_sample,1, 1, 1)
-
-U_sample[3,1] <- U-update(M_sample, U_sample, V_sample,1 , 1)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Now that we have a way to relate each user to each other we can find which users are most similar to each other, then use the average rating of those users to recommend movies. \
 
 ```{r}
-U_update <- function(M, U, V, k, r, s){
-  
-  valid_items <- which(!is.na(M[r, ])) # Only go through values where we are not missing something
-  
-  residuals <- M[r, valid_items] - U[r, k] * V[k, valid_items] # Get the difference from the actual rating (before -) and our predicted value(after -) for each column
-  
-  u <- sum(V[k, valid_items] * residuals) / # Numerator is the sum of the residuals times their respective V matrix value
-          sum(V[k, valid_items]^2) # Denominator is the sum of squares of the V vector.
-  
-  return(u)
+get_recommended_users <- function(sim_matrix, n){ # gets the top n users returns as list of indicies.
+  # Iterate through rows, sort the rows and take the top n values and append to list. 
+  # Return the list
+  rows <- nrow(sim_matrix)
+  list <- (c())
+  for(i in 1:rows){ # Iterate over matrix rows
+    # The user itself should be 0, I will set to -1 to make sure they are not accidentally selected by themselves
+    sim_matrix[i,i] <- -1
+    # Get the top n values by sorting then indexing 1:n
+    top_n <- order(sim_matrix[i,], decreasing = TRUE)[1:n] # get top n
+    list[[length(list)+1]] = top_n
+  }
+  return(list)
 }
-U_update(M_sample, U_sample, V_sample,1, 1, 5)
+closest_users <- get_recommended_users(jac_matrix, 2)
 ```
-We get the expected value from the text book
-I repeated this but for the V matrix. \
+
+Now we have a list of the closest 2 users. We can now get a recommended rating through this.
+We are getting the average difference (from being normalized) of the similar users.
 ```{r}
-V_update <- function(M, U, V, k, r, s){
-
-  valid_users <- which(!is.na(M[, s])) # Only go through values where we are not missing something
-
-  residuals <- M[valid_users, s] - U[valid_users, k] * V[k, s] # Difference between actual and predicted value
-
-  v <- sum(U[valid_users, k] * residuals) / # Numerator: residuals weighted by U
-          sum(U[valid_users, k]^2) # Denominator: sum of squares of U values
-
-  return(v)
+create_recommended_ratings <- function(ratings, related_users_list){ # Iterate through the rows of the users and get the average movie ratings of these users from the org_ratings. 
+  rows <- nrow(ratings)
+  cols <- ncol(ratings)
+  new_matrix <- matrix(0, rows, cols) # Create new matrix to populate
+  
+  for(i in 1:rows){ # Iterate through users
+      related_users <- related_users_list[[i]] # Get the list as a vector for the related_users
+      for(j in 1:cols){ # iterate items
+        current_ratings <- ratings[related_users, j] # Gets a list of the related users from the normalized ratings
+        # If the current ratings are all na then no similar users rated different movies currently leaves as NA.
+      
+        new_matrix[i, j] <- mean(current_ratings, na.rm = TRUE) # the prediction is a average rating of these users
+      }
+  }
+  return(new_matrix)
 }
+rec_diff <- create_recommended_ratings(M_norm,closest_users)
 ```
+Finally we add this difference to the average mean score each user had. Some of the differences may be NA depending on N.
+
+```{r}
+user_avgs <- rowMeans(M, na.rm = TRUE)
+final_recommendations <- rec_diff + user_avgs
+final_recommendations
+```
+
+This whole process was very messy. I will try to combine everything into a single function, that way we can also test using hold-out data easily by rerunning it with missing data. \
+I will also add back the data from the original dataframe
+
+```{r}
+get_recommendations <- function(df, n) { # Original matrix, n users for user to user collaborative recommendations.
+  df <- as.data.frame(df)
+  
+  col_names <- colnames(df) # save column(movie) names
+  critics <- df[,1] # save rows(users)
+  
+  # Convert to matrix dropping the first column.
+  M <- as.matrix(df)
+  M <- M[, -1] # drop first column (Critic names)
+  
+  # Convert to numeric values
+  M <- matrix(
+    as.numeric(trimws(M)),
+    nrow = nrow(M)
+  )
+    
+  
+  normalization_vector <- rowMeans(M, na.rm = TRUE) # Get vector of everyones average rating.
+  M_norm <- M - normalization_vector 
+  
+  M_Jac <- ifelse(M_norm >= 0, 1, 0) # Modify a matrix for Jaccard distance. 
+  
+  jac_matrix <- create_jac_matrix(M_Jac) # Use the binary values to create a distance
+  
+  closest_users <- get_recommended_users(jac_matrix, n) # use the distances to get the closest n users
+  
+  rec_diff <- create_recommended_ratings(M_norm,closest_users) # Use closest users to get the recommendations 
+  
+  recommendations <- rec_diff + normalization_vector # Add back normalization
+  
+  # There is also no point in recommending movies that the user has already seen.
+  # Note that we can have na values from either no recommended or they seen the movie already.
+  # If the original has an na values, replace with NA in recommendations
+  
+  recommendations[!is.na(df[,-1])] <- NA # Cut first column from the df 
+  
+  # Convert back into a dataframe
+  rec_df <- as.data.frame(recommendations)
+  # Add back column names and critics
+  rec_df <- cbind(critics, rec_df)
+  rec_df <- setNames(rec_df, col_names)
+  
+  return(rec_df)
+}
+
+recommendations_2n <- get_recommendations(df, 2) 
+head(recommendations_2n)
+
+recommendations_3n <- get_recommendations(df, 3) 
+head(recommendations_3n)
+```
+
+We can try n = 4. Comparing to our previous assignment some values match decently. We can try to drop values and see if our system is able to guess accurately. We have now created recommendations for users for movies they have not seen based on what similar users had reviewed.
+```{r}
+recommendations_4n <- get_recommendations(df, 4)
+recommendations_4n
+```
+We can test out some values with hold-out data.\
+We can drop Charley's rating of 4 for Captain America, we can see our rating came very close, if we had rounded to an integer then we would have guessed correctly. I performed this test more than once and saw it was typically close to the original value.
+```{r}
+dropped_df <- df # Copy
+original_rating <- dropped_df[2,2] # Save charleys rating of 4 for captain america
+dropped_df[2,2] <- NA # Remove
+recommendations_dropped_4n <- get_recommendations(dropped_df, 4) # Recreate with dropped value matrix
+recommendations_dropped_4n[2,2] # new value
+(original_rating - recommendations_dropped_4n[2,2])[1,1] #difference
+```
+Finally we can take the highest value and pick out that column name to have a single suggestion for users. Some users may not have a recommendation due to already seeing all the movies or other reasons.
+```{r, message=FALSE, warning=FALSE}
+recommendations_4n$Recommended_Movie <- colnames(recommendations_4n)[max.col(recommendations_4n)]
+recommendations_4n$Recommended_Movie <- apply(recommendations_4n, 1, function(val){
+  ifelse(all(is.na(val)), NA, colnames(recommendations_4n)[which.max(val)])
+})
+rec_movie <- recommendations_4n %>%
+  select("Critic", "Recommended_Movie")
+rec_movie
+```
+# Conclusion
+In conclusion I was able to create a collaborative recommendation system. I was able to find users that were similar to other users with a similarity measure. Prior to doing this I first normalized the matrix by subtracting everyone's average rating from their ratings. Then I used Jaccard's distance to find how similar users were to one another. By selecting n similar users where n is an arbitrary number, I was able to get the average difference in ratings of those similar users. From that I had added back the normalization of the original users to get the critics recommendation that is based off similar critics. There are several ways I could expand/improve on this assignment. For example finding the best value for N, trying out different methods like item to item or matrix factorization and comparing them to each other, or even combining different techniques together. 
