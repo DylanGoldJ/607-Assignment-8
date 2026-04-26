@@ -9,11 +9,224 @@ In this assignment we have to develop a personalized recommended system. This as
 I intend to use the data that was given to us for the previous assignment. \
 There are 4 ways suggested, Content-based filtering, Item-to-item collaborative filtering, User-to-user collaborative filtering, Matrix factorization. \
 I have taken some classes on linear algebra so I considered the Matrix Factorization method but actually computing UV looks very tedious. \
-I would probably also use a k value of 2 so It would be possible. I also see that there is a function to find the derivative of an expression. Aswell as a way to get an expression equal to 0 with the `stats` package. I will try this out and hopefully it works.
+I would probably also use a k value of 2 just to keep it as simple as I can. I am not sure if k = 1 is valid but probably less successful. I also see that there is a function to find the derivative of an expression. As well as a way to get an expression equal to 0 with the `stats` package. I will try this out and hopefully it works.
 ```{r}
 f <- expression((x+1)^2)  # sample
-d = D(f, "x") # Derivative, we need to minimize the root mean square error for UV decomposition
+d = D(f, "x") # Derivative, we need to minimize the root mean square error for UV decomposition. 
+# We take the derivative(slope) find where its 0(local minima/maxima) and hope that's a minima.
+# It should just be parabolic degree 2 so the local minima is the global minima
 d2 <- function(x) eval(d) # Wrap in function, uniroot needs a function
 uniroot(f = d2, lower = -10, upper = 10) # Gets the root with a range (finds when equal 0 in our case)
 ```
-In the case that this does not work I will probably use a user to user collaborative filtering with a normalized cosine to measure the difference between users. It is described in Mining Massive Datasets in section 9.3.2
+In the case that this does not work I will probably use a user to user collaborative filtering with a normalized cosine to measure the difference between users. It is described in Mining Massive Datasets in section 9.3.2.
+
+# Codebase
+Imports \
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+```
+
+First we need to import the data for which we are creating a personalized recommendation system. \
+I will be reusing the given data in assignment 3A. 
+```{r, message=FALSE, warning=FALSE}
+url <- "https://raw.githubusercontent.com/DylanGoldJ/607-Assignment-3/refs/heads/main/MovieRatings3A.csv"
+
+df <- read_csv(
+  file = url,
+  col_names = FALSE # Missing headers in file.
+)
+
+# Set the names of the column to the movies that were watched.
+df <- df %>% set_names("Critic", "CaptainAmerica", "Deadpool", "Frozen", "JungleBook", "PitchPerfect2", "StarWarsForce")
+
+head(df, 5)
+
+```
+
+We will keep our data in this non-tidy format. This format will make it easier to work with as a matrix for UV decomposition. \
+We will let the number of people equal to the rows and number of movies as the columns.\
+I will first just get the numeric values as a matrix. \
+```{r}
+M <- as.matrix(df)
+M <- M[, -1] # drop first column (Critic names)
+M <- unname(M)
+
+# Convert to numeric values
+M <- matrix(
+  as.numeric(trimws(M)),
+  nrow = nrow(M)
+)
+M
+```
+We need to create two other matrices U, V, of dimensions n by d and d by m such that M ~= UV. \
+The value of d is arbitrary but they serve to characterize the users and movies.\
+
+I will not normalize the matrix this time.
+First Initialize U and V to sqrt(a/d) where a is the average of the matrix.
+Then we need to perform optimization to get a low rsme.
+Then we need to repeat this optimization to lower it even more.
+
+
+## Initialize
+```{r}
+# I will use 2 for d. This keeps it simple
+d <- 2
+a <- sqrt(mean(M, na.rm = TRUE)/d) # A = square of the average value over d
+U <- matrix(a, nrow = nrow(M), ncol = d)
+V <- matrix(a, nrow = d, ncol = ncol(M))
+```
+
+## Optimization
+Now that we have an initial value for U and V we need to optimize the rsme. \
+Initially my plan was to create an expression and then use the derivative function to manually find each value but I was not sure how to create the expressions. \
+The text book has an equation that also gives us a value for this. I used an LLM chatgpt to help me understand how these formulas can be used as well as generate some code. \
+
+I will create a function for generating a value in the U matrix. I also started with testing the example from the text book.
+```{r}
+M_sample <- matrix(c(
+  5, 2, 4, 4, 3,
+  3, 1, 2, 4, 1,
+  2, NA, 3, 1, 4,
+  2, 5, 4, 3, 5,
+  4, 4, 5, 4, NA
+), nrow = 5, byrow = TRUE)
+
+# Step 2: Initialize U and V (k = 2, all ones)
+k_sample <- 2
+
+U_sample <- matrix(1, nrow = nrow(M_sample), ncol = k)
+V_sample <- matrix(1, nrow = k, ncol = ncol(M_sample))
+```
+
+Here is code that I worked on with an LLM. It performs the equation mentioned in the book where we find the value of U(k,r) that would minimize the error from our predicted M and our actual M. \
+```{R}
+U_update <- function(M, U, V, k, r, s){
+  
+  valid_items <- which(!is.na(M[r, ])) # Only go through values where we are not missing something
+  
+  pred <- U[r, ] %*% V[, valid_items]
+  
+  residuals <- M[r, valid_items] - pred + U[r, k] * V[k, valid_items]
+  
+  u <- sum(V[k, valid_items] * residuals) /
+       sum(V[k, valid_items]^2)
+  
+  return(u)
+}
+```
+```{r}
+U_update <- function(M, U, V, k, r){
+  
+  valid_items <- which(!is.na(M[r, ]))
+  
+  if (length(valid_items) == 0) return(0)
+  
+  pred <- U[r, , drop = FALSE] %*% V[, valid_items, drop = FALSE]
+  
+  residuals <- M[r, valid_items] - pred + U[r, k] * V[k, valid_items]
+  
+  u <- sum(V[k, valid_items] * residuals) /
+       sum(V[k, valid_items]^2)
+  
+  return(u)
+}
+```
+I also got a V update which is
+```{r}
+V_update <- function(M, U, V, k, r, s){
+  
+  valid_users <- which(!is.na(M[, s]))  # rows where column s is observed
+  
+  pred <- U[valid_users, ] %*% V[, s]   # full dot product
+  
+  residuals <- M[valid_users, s] - pred + U[valid_users, k] * V[k, s]
+  
+  v <- sum(U[valid_users, k] * residuals) /
+       sum(U[valid_users, k]^2)
+  
+  return(v)
+}
+
+```
+
+
+
+We can follow the example in the text book to see if we have something that works.
+```{r}
+# Update U(1,1) 
+U_sample[1,1] <- U_update(M_sample, U_sample, V_sample,1, 1)
+
+# Update V(1,1), should be 1.617
+V_sample[1,1] <- V_update(M_sample, U_sample, V_sample,1, 1, 1)
+
+U_sample[3,1] <- U-update(M_sample, U_sample, V_sample,1 , 1)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+U_update <- function(M, U, V, k, r, s){
+  
+  valid_items <- which(!is.na(M[r, ])) # Only go through values where we are not missing something
+  
+  residuals <- M[r, valid_items] - U[r, k] * V[k, valid_items] # Get the difference from the actual rating (before -) and our predicted value(after -) for each column
+  
+  u <- sum(V[k, valid_items] * residuals) / # Numerator is the sum of the residuals times their respective V matrix value
+          sum(V[k, valid_items]^2) # Denominator is the sum of squares of the V vector.
+  
+  return(u)
+}
+U_update(M_sample, U_sample, V_sample,1, 1, 5)
+```
+We get the expected value from the text book
+I repeated this but for the V matrix. \
+```{r}
+V_update <- function(M, U, V, k, r, s){
+
+  valid_users <- which(!is.na(M[, s])) # Only go through values where we are not missing something
+
+  residuals <- M[valid_users, s] - U[valid_users, k] * V[k, s] # Difference between actual and predicted value
+
+  v <- sum(U[valid_users, k] * residuals) / # Numerator: residuals weighted by U
+          sum(U[valid_users, k]^2) # Denominator: sum of squares of U values
+
+  return(v)
+}
+```
